@@ -1,0 +1,30 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "status": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['state', 'updatedAt'])"
+      }
+    },
+    "rooms": {
+      "$boardKey": {
+        ".read": "auth != null",
+        "presence": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "newData.hasChildren(['name', 'role', 'updatedAt'])"
+          }
+        },
+        "strokes": {
+          ".write": "auth != null",
+          "$strokeId": {
+            ".validate": "newData.hasChildren(['points', 'color', 'width', 'author', 'createdAt']) && newData.child('author').val() === auth.uid"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2557e6" />
+    <meta
+      name="description"
+      content="HỌC NHÓM STUDY – Kết nối học tập, chia sẻ tri thức, cùng nhau tiến bộ. Nền tảng học nhóm trực tuyến dành cho giáo viên và học sinh."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Áp dụng theme trước khi React render để tránh nháy sáng khi người dùng chọn chế độ tối.
+      (function () {
+        try {
+          var stored = localStorage.getItem('hoc-nhom-study-theme');
+          var theme =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.classList.toggle('dark', theme === 'dark');
+          document.documentElement.style.colorScheme = theme;
+        } catch (error) {
+          /* Trình duyệt chặn localStorage: dùng giao diện sáng mặc định. */
+        }
+      })();
+    </script>
+    <title>HỌC NHÓM STUDY – Học nhóm trực tuyến</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,391 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HỌC NHÓM STUDY – Firestore Security Rules
+// Nguyên tắc:
+//  • Mọi thao tác đều yêu cầu đăng nhập + hồ sơ users/{uid} đang hoạt động.
+//  • Học sinh chỉ đọc dữ liệu của nhóm mình đã tham gia (groupMembers).
+//  • Giáo viên chỉ quản lý nhóm do mình sở hữu (groups.teacherId).
+//  • Admin quản trị toàn hệ thống; không ai tự nâng quyền thành admin.
+//  • Không có quyền đọc/ghi công khai.
+// ═══════════════════════════════════════════════════════════════════════════
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function hasProfile() {
+      return signedIn() && exists(profilePath());
+    }
+
+    function myProfile() {
+      return get(profilePath()).data;
+    }
+
+    function isActive() {
+      // Tài khoản mới luôn active. Hồ sơ cũ còn 'pending' từ cơ chế duyệt
+      // trước đây vẫn được truy cập; tài khoản bị khóa thì bị từ chối.
+      return hasProfile() && myProfile().status in ['active', 'pending'];
+    }
+
+    function isAdmin() {
+      return isActive() && myProfile().role == 'admin';
+    }
+
+    function isTeacher() {
+      return isActive() && myProfile().role == 'teacher';
+    }
+
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/groups/$(groupId);
+    }
+
+    function memberPath(groupId) {
+      return /databases/$(database)/documents/groupMembers/$(groupId + '_' + request.auth.uid);
+    }
+
+    function memberDocPath(groupId, userId) {
+      return /databases/$(database)/documents/groupMembers/$(groupId + '_' + userId);
+    }
+
+    function isMember(groupId) {
+      return signedIn() && groupId is string && exists(memberPath(groupId));
+    }
+
+    function hasMember(groupId, userId) {
+      return signedIn()
+        && groupId is string
+        && userId is string
+        && exists(memberDocPath(groupId, userId));
+    }
+
+    function isGroupTeacher(groupId) {
+      return isTeacher()
+        && groupId is string
+        && exists(groupPath(groupId))
+        && get(groupPath(groupId)).data.teacherId == request.auth.uid;
+    }
+
+    function canManageGroup(groupId) {
+      return isGroupTeacher(groupId) || isAdmin();
+    }
+
+    // ── Hồ sơ người dùng ───────────────────────────────────────────────────
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      // Đăng ký: chỉ được tạo hồ sơ cho chính mình, không tự cấp admin.
+      // Tài khoản mới được kích hoạt ngay, không cần quản trị viên duyệt.
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role in ['student', 'teacher']
+        && request.resource.data.status == 'active';
+
+      // Người dùng tự cập nhật hồ sơ nhưng không đổi được role/status/email.
+      allow update: if isAdmin()
+        || (
+          isActive()
+          && request.auth.uid == uid
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.email == resource.data.email
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // ── Nhóm học ───────────────────────────────────────────────────────────
+    match /groups/{groupId} {
+      allow get: if isActive() && (isMember(groupId) || isAdmin() || resource.data.teacherId == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        || (isTeacher() && request.resource.data.teacherId == request.auth.uid);
+      allow update, delete: if canManageGroup(groupId);
+    }
+
+    // Mã tham gia: đọc bằng get (không cho liệt kê để tránh dò mã).
+    // Cho phép khách chưa đăng nhập xem trước lời mời; mã 6 ký tự đóng vai trò bearer token.
+    match /inviteCodes/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isActive() && (isGroupTeacher(request.resource.data.groupId) || isAdmin());
+      allow update, delete: if isActive() && (isGroupTeacher(resource.data.groupId) || isAdmin());
+    }
+
+    // ── Thành viên nhóm ────────────────────────────────────────────────────
+    match /groupMembers/{memberId} {
+      allow get, list: if isActive() && (request.auth.uid == resource.data.uid || isMember(resource.data.groupId) || isAdmin());
+
+      // Tự tham gia chỉ hợp lệ khi gửi kèm đúng mã mời hiện tại của nhóm.
+      allow create: if isActive()
+        && (
+          isAdmin()
+          || (
+            request.resource.data.uid == request.auth.uid
+            && request.resource.data.role in ['student', 'teacher']
+            && exists(groupPath(request.resource.data.groupId))
+            && request.resource.data.inviteCode == get(groupPath(request.resource.data.groupId)).data.inviteCode
+            && (
+              request.resource.data.role == 'student'
+              || (
+                request.resource.data.role == 'teacher'
+                && isTeacher()
+                && get(groupPath(request.resource.data.groupId)).data.teacherId == request.auth.uid
+              )
+            )
+          )
+        );
+
+      allow delete: if isActive()
+        && (isAdmin() || isGroupTeacher(resource.data.groupId) || resource.data.uid == request.auth.uid);
+
+      allow update: if isAdmin();
+    }
+
+    // ── Phòng học trực tuyến ──────────────────────────────────────────────
+    match /rooms/{groupId} {
+      allow read: if isActive() && (isMember(groupId) || isAdmin());
+      allow write: if canManageGroup(groupId);
+    }
+
+    // ── Tin nhắn (nhóm + riêng) ────────────────────────────────────────────
+    match /messages/{messageId} {
+      allow get, list: if isActive() && (
+        isAdmin()
+        || (resource.data.type == 'group' && isMember(resource.data.groupId))
+        || (request.auth.uid in resource.data.participants)
+      );
+
+      allow create: if isActive() && request.resource.data.senderId == request.auth.uid && (
+        (
+          request.resource.data.type == 'group'
+          && (isMember(request.resource.data.groupId) || isAdmin())
+          && request.resource.data.participants.size() == 0
+        )
+        || (
+          request.resource.data.type == 'direct'
+          && request.resource.data.participants.size() == 2
+          && request.auth.uid in request.resource.data.participants
+          && request.resource.data.peerId is string
+          && request.resource.data.peerId != request.auth.uid
+          && request.resource.data.peerId in request.resource.data.participants
+          && request.resource.data.groupId is string
+          && isMember(request.resource.data.groupId)
+          && hasMember(request.resource.data.groupId, request.resource.data.peerId)
+        )
+      );
+
+      allow update, delete: if isActive() && (
+        isAdmin()
+        || resource.data.senderId == request.auth.uid
+        || (resource.data.type == 'group' && isGroupTeacher(resource.data.groupId))
+      );
+    }
+
+    // ── Tài liệu Google Drive ──────────────────────────────────────────────
+    match /materials/{materialId} {
+      allow get, list: if isActive() && (isAdmin() || isMember(resource.data.groupId));
+      allow create: if isActive()
+        && request.resource.data.createdBy == request.auth.uid
+        && canManageGroup(request.resource.data.groupId);
+      allow update, delete: if canManageGroup(resource.data.groupId);
+    }
+
+    // ── Bài tập ───────────────────────────────────────────────────────────
+    match /assignments/{assignmentId} {
+      allow get, list: if isActive() && (isAdmin() || isMember(resource.data.groupId));
+      allow create: if isActive()
+        && request.resource.data.createdBy == request.auth.uid
+        && canManageGroup(request.resource.data.groupId);
+      allow update, delete: if canManageGroup(resource.data.groupId);
+    }
+
+    // ── Bài nộp ───────────────────────────────────────────────────────────
+    match /submissions/{submissionId} {
+      allow get, list: if isActive() && (
+        isAdmin()
+        || resource.data.studentId == request.auth.uid
+        || isGroupTeacher(resource.data.groupId)
+      );
+
+      allow create: if isActive()
+        && request.resource.data.studentId == request.auth.uid
+        && isMember(request.resource.data.groupId)
+        && request.resource.data.status == 'submitted'
+        && request.resource.data.grade == null;
+
+      allow update: if isActive() && (
+        isAdmin()
+        || isGroupTeacher(resource.data.groupId)
+        || (
+          resource.data.studentId == request.auth.uid
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.groupId == resource.data.groupId
+          && request.resource.data.assignmentId == resource.data.assignmentId
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.grade == resource.data.grade
+          && resource.data.grade == null
+        )
+      );
+
+      allow delete: if isActive() && (isAdmin() || isGroupTeacher(resource.data.groupId));
+    }
+
+    // ── Bài kiểm tra trắc nghiệm ──────────────────────────────────────────
+    // Đáp án đúng nằm ở collection riêng quizKeys, chỉ giáo viên/admin được đọc.
+    match /quizzes/{quizId} {
+      allow get, list: if isActive() && (isAdmin() || isMember(resource.data.groupId));
+      allow create: if isActive()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.questions.size() > 0
+        && canManageGroup(request.resource.data.groupId);
+      allow update, delete: if canManageGroup(resource.data.groupId);
+    }
+
+    match /quizKeys/{quizId} {
+      allow get: if isActive() && (isAdmin() || isGroupTeacher(resource.data.groupId));
+      allow list: if false;
+      allow create, update: if isActive()
+        && canManageGroup(request.resource.data.groupId);
+      allow delete: if isActive() && canManageGroup(resource.data.groupId);
+    }
+
+    match /quizSubmissions/{submissionId} {
+      allow get, list: if isActive() && (
+        isAdmin()
+        || resource.data.studentId == request.auth.uid
+        || isGroupTeacher(resource.data.groupId)
+      );
+
+      allow create: if isActive()
+        && request.resource.data.studentId == request.auth.uid
+        && isMember(request.resource.data.groupId)
+        && request.resource.data.status == 'submitted'
+        && request.resource.data.score == null
+        && request.resource.data.answers is map;
+
+      allow update: if isActive() && (
+        isAdmin()
+        || isGroupTeacher(resource.data.groupId)
+        || (
+          resource.data.studentId == request.auth.uid
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.groupId == resource.data.groupId
+          && request.resource.data.quizId == resource.data.quizId
+          && request.resource.data.status == 'submitted'
+          && request.resource.data.score == resource.data.score
+          && resource.data.score == null
+          && request.resource.data.answers is map
+        )
+      );
+
+      allow delete: if isActive() && (isAdmin() || isGroupTeacher(resource.data.groupId));
+    }
+
+    // ── Điểm danh ─────────────────────────────────────────────────────────
+    match /attendance/{attendanceId} {
+      allow get, list: if isActive() && (
+        isAdmin()
+        || resource.data.studentId == request.auth.uid
+        || isGroupTeacher(resource.data.groupId)
+      );
+
+      allow create, update: if isActive()
+        && canManageGroup(request.resource.data.groupId)
+        && request.resource.data.markedBy == request.auth.uid
+        && request.resource.data.status in ['present', 'late', 'absent']
+        && request.resource.data.date is string
+        && request.resource.data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+
+      allow delete: if isActive() && canManageGroup(resource.data.groupId);
+    }
+
+    // ── Lịch học ──────────────────────────────────────────────────────────
+    match /schedules/{scheduleId} {
+      allow get, list: if isActive() && (isAdmin() || isMember(resource.data.groupId));
+      allow create: if isActive()
+        && request.resource.data.createdBy == request.auth.uid
+        && canManageGroup(request.resource.data.groupId);
+      allow update, delete: if canManageGroup(resource.data.groupId);
+    }
+
+    // ── Thông báo ─────────────────────────────────────────────────────────
+    match /notifications/{notificationId} {
+      allow get, list: if isActive() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isActive() && request.resource.data.fromId == request.auth.uid && (
+        request.resource.data.userId == request.auth.uid
+        || isAdmin()
+        || (
+          request.resource.data.groupId is string
+          && (
+            isGroupTeacher(request.resource.data.groupId)
+            || isMember(request.resource.data.groupId)
+          )
+        )
+      );
+
+      allow update, delete: if isActive() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // ── Báo cáo nội dung ──────────────────────────────────────────────────
+    match /reports/{reportId} {
+      allow create: if isActive()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.status == 'open'
+        && request.resource.data.targetType in ['message', 'material', 'assignment', 'quiz', 'user']
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3;
+
+      allow get, list: if isActive() && (
+        isAdmin()
+        || resource.data.reporterId == request.auth.uid
+        || (
+          resource.data.groupId is string
+          && isGroupTeacher(resource.data.groupId)
+        )
+      );
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ── Quản trị lớp học (chỉ Admin) ────────────────────────────────────────
+    match /classes/{classId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /classMembers/{memberId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    // ── Môn học & bài học (chỉ Admin quản lý) ───────────────────────────────
+    match /subjects/{subjectId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /lessons/{lessonId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    // ── Nhật ký quản trị: Admin được đọc và ghi, không được sửa/xóa ────────
+    match /activityLogs/{logId} {
+      allow read, create: if isAdmin() && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Mặc định từ chối mọi đường dẫn không khai báo.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

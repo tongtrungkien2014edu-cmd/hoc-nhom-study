@@ -1,0 +1,30 @@
+{
+  "name": "hoc-nhom-study",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "HỌC NHÓM STUDY – Nền tảng học nhóm trực tuyến (React + Firebase)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "set-admin": "node scripts/set-admin.mjs"
+  },
+  "dependencies": {
+    "date-fns": "^4.1.0",
+    "firebase": "^11.10.0",
+    "firebase-admin": "^14.5.0",
+    "framer-motion": "^11.18.2",
+    "lucide-react": "^0.475.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^3.4.17",
+    "vite": "^6.1.0"
+  }
+}
